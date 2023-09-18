@@ -394,7 +394,7 @@ class Optimizer:
 #                 logger=self.logger,
 #             )
 #
-            step = tr_wrapped(self.x, self.grad, self.hess, self.lb, self.ub)
+            step = tr_wrapped(self.x, self.grad, self.hess, self.lb, self.ub, self.get_option(Options.THETA_MAX))
             dv = step.dv
             scaling = step.scaling
             theta = step.theta
