@@ -122,7 +122,7 @@ def solve_nd_trust_region_subproblem(B, g, delta):
 
 
 @jax.jit
-def tr_iteration(x, grad, hess, lb, ub, theta_max):
+def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
     v, dv = get_affine_scaling(x, grad, lb, ub)
 
     ### trust region init ###
@@ -255,6 +255,6 @@ class StepInfo:
     scaling: jnp.ndarray
     theta: jnp.ndarray
 
-def tr_wrapped(x, grad, hess, lb, ub, theta_max):
-    res = tr_iteration(x, grad, hess, lb, ub, theta_max)
+def tr_wrapped(x, grad, hess, lb, ub, theta_max, delta):
+    res = tr_iteration(x, grad, hess, lb, ub, theta_max, delta)
     return StepInfo(**res)
