@@ -1,3 +1,8 @@
+import jax.numpy as jnp
+import jax
+jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_debug_nans", True)
+
 @jax.jit
 def normalize(v):
     nv = jnp.linalg.norm(v)
