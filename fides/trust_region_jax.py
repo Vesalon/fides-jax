@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import jax
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_debug_nans", True)
+np_eps = jnp.finfo(jnp.float64).eps
 
 @jax.jit
 def normalize(v):
@@ -139,7 +140,7 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max):
     br = jnp.ones(sg.shape)
     minbr = 1.0
     alpha = 1.0
-    iminbr = np.array([])
+    iminbr = jnp.array([])
 
     qpval = 0.0
 
