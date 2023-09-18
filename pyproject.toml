@@ -20,5 +20,5 @@ name = "fides_jax"
 version = "0.7.8"
 
 [tool.setuptools.package-dir]
-fides_jax = "fides"
+fides_jax = "fides_jax"
 
