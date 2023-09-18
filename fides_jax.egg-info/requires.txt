@@ -1,8 +1,0 @@
-numpy>=1.19.2
-scipy>=1.5.2
-h5py>=3.5.0
-
-[test]
-pytest>=5.4.2
-pytest-cov>=4.0.0
-flake8>=3.7.2
