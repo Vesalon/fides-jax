@@ -14,3 +14,11 @@ skip-string-normalization = true
 profile = "black"
 line_length = 79
 multi_line_output = 3
+
+[project]
+name = "fides_jax"
+version = "0.7.8"
+
+[tool.setuptools.package-dir]
+fides_jax = "fides"
+
