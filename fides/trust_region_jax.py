@@ -254,6 +254,7 @@ class StepInfo:
     ss0: jnp.ndarray
     scaling: jnp.ndarray
     theta: jnp.ndarray
+    type: str = 'tr2d'
 
 def tr_wrapped(x, grad, hess, lb, ub, theta_max, delta):
     res = tr_iteration(x, grad, hess, lb, ub, theta_max, delta)
