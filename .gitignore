@@ -5,6 +5,7 @@ venv/*
 fides_jax.egg-info/*
 .DS_Store
 _build/*
+build/*
 docs/_build/*
 docs/generated/*
 coverage.xml

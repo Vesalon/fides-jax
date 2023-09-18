@@ -68,6 +68,72 @@ def dsecular(lam, w, eigvals, eigvecs, delta):
     sn = jnp.linalg.norm(s)
     return jax.lax.select(sn > 0, -s.T.dot(ds) / (jnp.linalg.norm(s) ** 3), jnp.inf)
 
+def copysign(a, b):
+    return jnp.abs(-a)*(jnp.sign(b) + (b == 0))
+
+@jax.jit
+def get_1d_trust_region_boundary_solution(B, g, s, s0, delta):
+    a = jnp.dot(s, s)
+    b = 2 * jnp.dot(s0, s)
+    c = jnp.dot(s0, s0) - delta**2
+
+    aux = b + copysign(jnp.sqrt(b**2 - 4 * a * c), b)
+    ts = [-aux / (2 * a), -2 * c / aux]
+    # qs = [quadratic_form(B, g, s0 + t * s) for t in ts]
+
+    qf = jax.vmap(quadratic_form, in_axes=(None, None, 0))
+    qs = qf(B, g, s0 + ts * s)
+
+    return ts[jnp.argmin(qs)]
+
+
+@jax.jit
+def solve_1d_trust_region_subproblem(B, g, s, delta, s0):
+    """
+    Solves the special case of a one-dimensional subproblem
+
+    :param B:
+        Hessian of the quadratic subproblem
+    :param g:
+        Gradient of the quadratic subproblem
+    :param s:
+        Vector defining the one-dimensional search direction
+    :param delta:
+        Norm boundary for the solution of the quadratic subproblem
+    :param s0:
+        reference point from where search is started, also counts towards
+        norm of step
+
+    :return:
+        Proposed step-length
+    """
+    # if delta == 0.0:
+    #     return delta * jnp.ones((1,))
+
+    # if jnp.array_equal(s, jnp.zeros_like(s)):
+    #     return jnp.zeros((1,))
+    
+    null_res = jnp.zeros_like(s)
+
+    a = 0.5 * B.dot(s).dot(s)
+    # if not isinstance(a, float):
+    #     a = a[0, 0]
+    b = s.T.dot(B.dot(s0) + g)
+
+    minq = -b / (2 * a)
+    # if a > 0 and jnp.linalg.norm(minq * s + s0) <= delta:
+    #     # interior solution
+    #     tau = minq
+    # else:
+    #     tau = get_1d_trust_region_boundary_solution(B, g, s, s0, delta)
+
+    bound_cond = jnp.logical_and(a > 0, jnp.linalg.norm(minq * s + s0) <= delta)
+    tau = jax.lax.select(bound_cond, minq, get_1d_trust_region_boundary_solution(B, g, s, s0, delta))
+
+
+    res = tau * jnp.ones((1,))
+    return jax.lax.select(jnp.logical_and(delta == 0.0, jnp.array_equal(s, jnp.zeros_like(s))), null_res, res)
+
 @jax.jit
 def solve_nd_trust_region_subproblem_jitted(B, g, delta):
     # See Nocedal & Wright 2006 for details
@@ -191,11 +257,15 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
     cg = subspace.T.dot(sg)
 
     ### compute step ###
-    sc, _ = solve_nd_trust_region_subproblem_jitted(
+    sc_1 = solve_1d_trust_region_subproblem(shess, sg, subspace[:, 0], delta, ss0)
+    sc_n, _ = solve_nd_trust_region_subproblem_jitted(
         chess,
         cg,
         jnp.sqrt(jnp.maximum(delta**2 - jnp.linalg.norm(ss0) ** 2, 0.0)),
     )
+
+    sc = jax.lax.select(jnp.linalg.matrix_rank(subspace) == 1, sc_1, sc_n)
+
     ss = subspace.dot(jnp.real(sc))
     s = scaling.dot(ss)
 
@@ -239,7 +309,25 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
         'ss': ss,
         'ss0': ss0,
         'scaling': scaling,
-        'theta': theta
+        'theta': theta,
+        'alpha': alpha,
+        'br': br,
+        'cg': cg,
+        'chess': chess,
+        'delta': delta,
+        'iminbr': iminbr,
+        'lb': lb,
+        'minbr': minbr,
+        'og_s': og_s,
+        'og_sc': og_sc,
+        'og_ss': og_ss,
+        'sc': sc,
+        'shess': shess,
+        'subspace': subspace,
+        'ub': ub,
+        'x': x,
+        'posdef': posdef,
+        'sg': sg,
     }
 
 @dataclass
@@ -253,6 +341,25 @@ class StepInfo:
     ss0: jnp.ndarray
     scaling: jnp.ndarray
     theta: jnp.ndarray
+    alpha: jnp.ndarray
+    br: jnp.ndarray
+    cg: jnp.ndarray
+    chess: jnp.ndarray
+    delta: float
+    iminbr: jnp.ndarray
+    lb: jnp.ndarray
+    minbr: jnp.ndarray
+    og_s: jnp.ndarray
+    og_sc: jnp.ndarray
+    og_ss: jnp.ndarray
+    sc: jnp.ndarray
+    shess: jnp.ndarray
+    subspace: jnp.ndarray
+    ub: jnp.ndarray
+    x: jnp.ndarray
+    posdef: bool
+    sg: jnp.ndarray
+    
     type: str = 'tr2d'
 
 def tr_wrapped(x, grad, hess, lb, ub, theta_max, delta):
