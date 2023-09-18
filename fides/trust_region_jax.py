@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import jax.numpy as jnp
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -240,8 +241,6 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
         'scaling': scaling,
         'theta': theta
     }
-
-from dataclasses import dataclass
 
 @dataclass
 class StepInfo:
