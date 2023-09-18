@@ -35,6 +35,7 @@ from .hessian_approximation import (
 )
 from .logging import create_logger
 from .trust_region import Step, trust_region
+from .trust_region_jax import tr_wrapped
 
 
 class FunEvaluator:
@@ -368,30 +369,35 @@ class Optimizer:
             self.iteration += 1
             self.delta_iter = self.delta
 
-            v, dv = self.get_affine_scaling()
-
-            scaling = csc_matrix(np.diag(np.sqrt(np.abs(v))))
-            theta = max(
-                self.get_option(Options.THETA_MAX),
-                1 - norm(v * self.grad, np.inf),
-            )
-
-            self.check_finite()
-
-            step = trust_region(
-                self.x,
-                self.grad,
-                self.hess,
-                scaling,
-                self.delta_iter,
-                dv,
-                theta,
-                self.lb,
-                self.ub,
-                subspace_dim=self.get_option(Options.SUBSPACE_DIM),
-                stepback_strategy=self.get_option(Options.STEPBACK_STRAT),
-                logger=self.logger,
-            )
+#             v, dv = self.get_affine_scaling()
+# 
+#             scaling = csc_matrix(np.diag(np.sqrt(np.abs(v))))
+#             theta = max(
+#                 self.get_option(Options.THETA_MAX),
+#                 1 - norm(v * self.grad, np.inf),
+#             )
+# 
+#             self.check_finite()
+# 
+#             step = trust_region(
+#                 self.x,
+#                 self.grad,
+#                 self.hess,
+#                 scaling,
+#                 self.delta_iter,
+#                 dv,
+#                 theta,
+#                 self.lb,
+#                 self.ub,
+#                 subspace_dim=self.get_option(Options.SUBSPACE_DIM),
+#                 stepback_strategy=self.get_option(Options.STEPBACK_STRAT),
+#                 logger=self.logger,
+#             )
+#
+            step = tr_wrapped(self.x, self.grad, self.hess, self.lb, self.ub)
+            dv = step.dv
+            scaling = step.scaling
+            theta = step.theta
 
             x_new = self.x + step.s + step.s0
             funout_new = self.fevaler(x_new)
