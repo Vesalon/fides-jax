@@ -4,6 +4,8 @@ Subproblem Solvers
 This module provides the machinery to solve 1- and N-dimensional
 trust-region subproblems.
 """
+import sys
+import traceback
 
 import logging
 import math
@@ -13,6 +15,7 @@ import numpy as np
 from numpy.linalg import norm
 from scipy import linalg
 from scipy.optimize import brentq, newton
+from .trust_region_jax import secular_newton
 
 
 def quadratic_form(Q: np.ndarray, p: np.ndarray, x: np.ndarray) -> float:
@@ -170,6 +173,22 @@ def solve_nd_trust_region_subproblem(
     if secular(laminit, w, eigvals, eigvecs, delta) < 0:
         maxiter = 100
         try:
+            r = secular_newton(laminit, w, eigvals, eigvecs, delta, maxiter)
+            s = slam(r, w, eigvals, eigvecs)
+            if norm(s) <= delta + 1e-12:
+                logger.debug('Found boundary subproblem solution via [CUSTOM] newton')
+                return s, 'indef'
+            else:
+                logger.debug(f'[CUSTOM] newton was bad: r = {r}, s = {s}')
+        except Exception as exc:
+            # exc_type, exc_value, exc_traceback = sys.exc_info()
+            # print(exc_type)
+            print(exc)
+            exc_info = sys.exc_info()
+            traceback.print_exception(*exc_info)
+            logger.debug('[CUSTOM] newton didnt work')
+            pass
+        try:
             r = newton(
                 secular,
                 laminit,
@@ -182,6 +201,8 @@ def solve_nd_trust_region_subproblem(
             if norm(s) <= delta + 1e-12:
                 logger.debug('Found boundary subproblem solution via newton')
                 return s, 'indef'
+            else:
+                logger.debug(f'newton was bad: r = {r}, s = {s}')
         except RuntimeError:
             pass
         try:

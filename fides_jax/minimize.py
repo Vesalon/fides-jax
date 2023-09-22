@@ -369,35 +369,35 @@ class Optimizer:
             self.iteration += 1
             self.delta_iter = self.delta
 
-#             v, dv = self.get_affine_scaling()
-# 
-#             scaling = csc_matrix(np.diag(np.sqrt(np.abs(v))))
-#             theta = max(
-#                 self.get_option(Options.THETA_MAX),
-#                 1 - norm(v * self.grad, np.inf),
-#             )
-# 
-#             self.check_finite()
-# 
-#             step = trust_region(
-#                 self.x,
-#                 self.grad,
-#                 self.hess,
-#                 scaling,
-#                 self.delta_iter,
-#                 dv,
-#                 theta,
-#                 self.lb,
-#                 self.ub,
-#                 subspace_dim=self.get_option(Options.SUBSPACE_DIM),
-#                 stepback_strategy=self.get_option(Options.STEPBACK_STRAT),
-#                 logger=self.logger,
-#             )
-#
-            step = tr_wrapped(self.x, self.grad, self.hess, self.lb, self.ub, self.get_option(Options.THETA_MAX), self.delta_iter)
-            dv = step.dv
-            scaling = step.scaling
-            theta = step.theta
+            v, dv = self.get_affine_scaling()
+
+            scaling = csc_matrix(np.diag(np.sqrt(np.abs(v))))
+            theta = max(
+                self.get_option(Options.THETA_MAX),
+                1 - norm(v * self.grad, np.inf),
+            )
+
+            self.check_finite()
+
+            step = trust_region(
+                self.x,
+                self.grad,
+                self.hess,
+                scaling,
+                self.delta_iter,
+                dv,
+                theta,
+                self.lb,
+                self.ub,
+                subspace_dim=self.get_option(Options.SUBSPACE_DIM),
+                stepback_strategy=self.get_option(Options.STEPBACK_STRAT),
+                logger=self.logger,
+            )
+
+            # step = tr_wrapped(self.x, self.grad, self.hess, self.lb, self.ub, self.get_option(Options.THETA_MAX), self.delta_iter)
+            # dv = step.dv
+            # scaling = step.scaling
+            # theta = step.theta
 
             x_new = self.x + step.s + step.s0
             funout_new = self.fevaler(x_new)
@@ -934,3 +934,126 @@ class Optimizer:
 def _min_max_evs(mat: np.ndarray):
     evs = np.linalg.eigvals(mat)
     return np.real(np.min(evs)), np.real(np.max(evs))
+
+
+
+
+
+class Optimizer2(Optimizer):
+    def minimize(self, x0: np.ndarray, start_id: Optional[str] = None):
+        """
+        Minimize the objective function using the interior trust-region
+        reflective algorithm described by [ColemanLi1994] and [ColemanLi1996]
+        Convergence with respect to function value is achieved when
+        math:`|f_{k+1} - f_k|` < options[`fatol`] - :math:`f_k` options[
+        `frtol`]. Similarly, convergence with respect to optimization
+        variables is achieved when :math:`||x_{k+1} - x_k||` < options[
+        `xtol`] :math:`x_k` (note that this is checked in transformed
+        coordinates that account for distance to boundaries).  Convergence
+        with respect to the gradient is achieved when :math:`||g_k||` <
+        options[`gatol`] or `||g_k||` < options[`grtol`] * `f_k`. Other than
+        that, optimization can be terminated when iterations exceed
+        options[ `maxiter`] or the elapsed time is expected to exceed
+        options[`maxtime`] on the next iteration.
+
+        :param x0:
+            initial guess
+
+        :returns:
+            fval: final function value,
+            x: final optimization variable values,
+            grad: final gradient,
+            hess: final Hessian (approximation)
+        """
+        self._reset(start_id)
+
+        self.x = np.array(x0).copy()
+        if self.x.ndim > 1:
+            raise ValueError('x0 must be a vector with x.ndim == 1!')
+        self.make_non_degenerate()
+        self.check_in_bounds()
+
+        funout = self.fevaler(self.x)
+
+        self.fval, self.grad = funout.fval, funout.grad
+        if self.hessian_update is not None:
+            self.hessian_update.init_mat(len(self.x), funout.hess)
+            self.hess = self.hessian_update.get_mat()
+        else:
+            self.hess = funout.hess.copy()
+
+        funout.checkdims()
+
+        self.track_minimum(funout)
+        self.log_header()
+        self.log_step_initial()
+
+        self.check_finite(funout)
+
+        self.converged = False
+
+        while self.check_continue():
+            self.iteration += 1
+            self.delta_iter = self.delta
+
+#             v, dv = self.get_affine_scaling()
+# 
+#             scaling = csc_matrix(np.diag(np.sqrt(np.abs(v))))
+#             theta = max(
+#                 self.get_option(Options.THETA_MAX),
+#                 1 - norm(v * self.grad, np.inf),
+#             )
+# 
+#             self.check_finite()
+# 
+#             step = trust_region(
+#                 self.x,
+#                 self.grad,
+#                 self.hess,
+#                 scaling,
+#                 self.delta_iter,
+#                 dv,
+#                 theta,
+#                 self.lb,
+#                 self.ub,
+#                 subspace_dim=self.get_option(Options.SUBSPACE_DIM),
+#                 stepback_strategy=self.get_option(Options.STEPBACK_STRAT),
+#                 logger=self.logger,
+#             )
+#
+            step = tr_wrapped(self.x, self.grad, self.hess, self.lb, self.ub, self.get_option(Options.THETA_MAX), self.delta_iter)
+            dv = step.dv
+            scaling = step.scaling
+            theta = step.theta
+
+            x_new = self.x + step.s + step.s0
+            funout_new = self.fevaler(x_new)
+
+            if np.isfinite(funout_new.fval):
+                self.check_finite(funout_new)
+
+            accepted = self.update_tr_radius(funout_new, step, dv)
+
+            if self.iteration % 10 == 0:
+                self.log_header()
+            self.log_step(accepted, step, funout_new)
+            self.check_convergence(step, funout_new)
+
+            # track minimum independently of whether we accept the step or not
+            self.track_minimum(funout_new)
+
+            if accepted:
+                self.update(step, funout_new, funout)
+                funout = funout_new
+
+            if self.get_option(Options.HISTORY_FILE):
+                self.track_history(accepted, step, funout_new)
+
+        if self.get_option(Options.HISTORY_FILE):
+            with h5py.File(self.get_option(Options.HISTORY_FILE), 'a') as f:
+                g = f.create_group(self.start_id)
+                for key, vals in self.history.items():
+                    g.create_dataset(key, data=vals)
+
+        return self.fval, self.x, self.grad, self.hess
+

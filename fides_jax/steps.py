@@ -225,12 +225,13 @@ class Step:
             self.s = np.zeros(self.s0.shape)
             return
         if self.subspace.shape[1] > 1:
-            self.sc, _ = solve_nd_trust_region_subproblem(
+            self.sc, case = solve_nd_trust_region_subproblem(
                 self.chess,
                 self.cg,
                 np.sqrt(max(self.delta**2 - norm(self.ss0) ** 2, 0.0)),
                 self.logger,
             )
+            self.logger.debug(f'case encountered: {case}')
         else:
             self.sc = solve_1d_trust_region_subproblem(
                 self.shess, self.sg, self.subspace[:, 0], self.delta, self.ss0

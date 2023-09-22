@@ -22,5 +22,5 @@ from .hessian_approximation import (
 from .logging import create_logger
 
 # flake8: noqa
-from .minimize import Optimizer
+from .minimize import Optimizer, Optimizer2
 from .version import __version__

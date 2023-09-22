@@ -5,6 +5,32 @@ jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_debug_nans", True)
 np_eps = jnp.finfo(jnp.float64).eps
 
+def make_newton(f, value_and_grad = False):
+    """
+    Newton's method for root-finding.
+    makes newton with no convergence criteria, just set number of iterations
+    """
+    if value_and_grad:
+        def body(it, x):
+            fx, dfx = f(x)
+            step = fx / dfx
+            new_x = x - step
+            return jax.lax.select(jnp.isfinite(new_x), new_x, x)
+    else:
+        def body(it, x):
+            fx, dfx = f(x), jax.grad(f)(x)
+            step = fx / dfx
+            new_x = x - step
+            return jax.lax.select(jnp.isfinite(new_x), new_x, x)
+    def newton(x0, num_iter):
+        return jax.lax.fori_loop(
+            0,
+            num_iter,
+            body,
+            x0,
+        )
+    return jax.jit(newton)
+
 @jax.jit
 def normalize(v):
     nv = jnp.linalg.norm(v)
@@ -68,21 +94,71 @@ def dsecular(lam, w, eigvals, eigvecs, delta):
     sn = jnp.linalg.norm(s)
     return jax.lax.select(sn > 0, -s.T.dot(ds) / (jnp.linalg.norm(s) ** 3), jnp.inf)
 
+@jax.jit
+def secular_and_grad(x, w, eigvals, eigvecs, delta):
+    return (
+        secular(x, w, eigvals, eigvecs, delta),
+        dsecular(x, w, eigvals, eigvecs, delta)
+    )
+
+@jax.jit
+def secular_newton(x0, w, eigvals, eigvecs, delta, num_iter):
+    """
+    Newton's method for root-finding.
+    no convergence criteria, just set number of iterations but if an iteration leads to inf/nan
+    it is ignored and the following iterations essentially become expensive noops
+    """
+    def body(it, x):
+        fx, dfx = secular_and_grad(x, w, eigvals, eigvecs, delta)
+        step = fx / dfx
+        new_x = x - step
+        return jnp.where(jnp.isfinite(new_x), new_x, x)
+
+    return jax.lax.fori_loop(
+        0,
+        num_iter,
+        body,
+        x0,
+    )
+
+# @jax.jit
+# def secular_newton(x0, w, eigvals, eigvecs, delta, maxiter):
+#     """
+#     Newton's method for root-finding.
+#     no convergence criteria, just set number of iterations but if an iteration leads to inf/nan
+#     it is ignored and the following iterations essentially become expensive noops
+#     """
+#     def cond(it, x):
+#         return jnp.logical_and(jnp.isfinite(x), it < maxiter)
+
+#     def body(it, x):
+#         fx, dfx = secular_and_grad(x, w, eigvals, eigvecs, delta)
+#         step = fx / dfx
+#         new_x = x - step
+#         return it+1, new_x
+
+#     return jax.lax.while_loop(
+#         cond,
+#         body,
+#         (0, x0),
+#     )
+
 def copysign(a, b):
     return jnp.abs(-a)*(jnp.sign(b) + (b == 0))
 
 @jax.jit
 def get_1d_trust_region_boundary_solution(B, g, s, s0, delta):
     a = jnp.dot(s, s)
+    # a = a[0, 0]
     b = 2 * jnp.dot(s0, s)
     c = jnp.dot(s0, s0) - delta**2
 
     aux = b + copysign(jnp.sqrt(b**2 - 4 * a * c), b)
-    ts = [-aux / (2 * a), -2 * c / aux]
+    ts = jnp.array([-aux / (2 * a), -2 * c / aux])
     # qs = [quadratic_form(B, g, s0 + t * s) for t in ts]
 
     qf = jax.vmap(quadratic_form, in_axes=(None, None, 0))
-    qs = qf(B, g, s0 + ts * s)
+    qs = qf(B, g, s0 + jnp.outer(ts, s))
 
     return ts[jnp.argmin(qs)]
 
@@ -113,7 +189,7 @@ def solve_1d_trust_region_subproblem(B, g, s, delta, s0):
     # if jnp.array_equal(s, jnp.zeros_like(s)):
     #     return jnp.zeros((1,))
     
-    null_res = jnp.zeros_like(s)
+    # null_res = jnp.zeros_like(s)
 
     a = 0.5 * B.dot(s).dot(s)
     # if not isinstance(a, float):
@@ -132,6 +208,8 @@ def solve_1d_trust_region_subproblem(B, g, s, delta, s0):
 
 
     res = tau * jnp.ones((1,))
+    null_res = jnp.zeros_like(res)
+
     return jax.lax.select(jnp.logical_and(delta == 0.0, jnp.array_equal(s, jnp.zeros_like(s))), null_res, res)
 
 @jax.jit
@@ -169,21 +247,35 @@ def solve_nd_trust_region_subproblem_jitted(B, g, delta):
     # \phi(lam) = 1/||s(lam)|| - 1/delta
     # \phi'(lam) = - s(lam).T*ds(lam)/||s(lam)||^3
     laminit = jax.lax.select(mineig > 0, 0.0, -mineig)
+
     # calculate s for positive definite case
-    s  = jnp.real(slam(0, w, eigvals, eigvecs))
+    s = jnp.real(slam(0, w, eigvals, eigvecs))
     norm_s = jnp.linalg.norm(s)
     thresh = delta + jnp.sqrt(np_eps)
-    posdef_cond = jnp.all(jnp.array([(mineig > 0), (norm_s <= thresh)]))
+    posdef_cond = jnp.logical_and((mineig > 0), (norm_s <= thresh))
+    neg_sval = secular(laminit, w, eigvals, eigvecs, delta) < 0
 
-    s = jax.lax.select(posdef_cond, s, hard_case(w, mineig, eigvals, eigvecs, delta, laminit, jmin))
-    hess_case = jax.lax.select(posdef_cond, 0, 1)
+
+    maxiter = 100
+    root = secular_newton(laminit, w, eigvals, eigvecs, delta, maxiter)
+    indef_s = slam(root, w, eigvals, eigvecs)
+    is_root = jnp.linalg.norm(indef_s) <= delta + 1e-12
+    indef = jnp.logical_and(neg_sval, is_root)
+
+    other_s = jax.lax.select(indef, indef_s, hard_case(w, mineig, eigvals, eigvecs, delta, laminit, jmin))
+    other_case = jax.lax.select(indef, 1, 2)
+    
+
+    s = jax.lax.select(posdef_cond, s, other_s)
+    hess_case = jax.lax.select(posdef_cond, 0, other_case)
+    jax.debug.print('case encountered: {case}', case = hess_case)
     return s, hess_case
 
 def solve_nd_trust_region_subproblem(B, g, delta):
     if delta == 0:
         return jnp.zeros(g.shape), 'zero'
 
-    cases = ['posdef', 'hard']
+    cases = ['posdef', 'indef', 'hard']
     s, case_ind = solve_nd_trust_region_subproblem_jitted(B, g, delta)
     return s, cases[int(case_ind)]
 
@@ -220,7 +312,7 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
 
     ### 2D steps ###
 
-    s_newt = -jnp.linalg.lstsq(shess, sg)[0]
+    og_s_newt = -jnp.linalg.lstsq(shess, sg)[0]
     # lstsq only returns absolute ev values
     e, v_ = jnp.linalg.eig(shess)
     posdef = jnp.min(jnp.real(e)) > -np_eps * jnp.max(jnp.abs(e))
@@ -231,13 +323,7 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
     #     return
 
 
-
-    ###### NOTE                                                                                                      #####
-    ###### replace case0 subspace from jnp.expand_dims(s_newt, 1) to jnp.vstack([s_newt, jnp.zeros(s_newt.shape)]).T #####
-    ###### this has the effect of always forcing a "hard" solution without gradient direction                        #####
-
-
-    s_newt_ = normalize(s_newt)
+    s_newt_ = normalize(og_s_newt)
     subspace_0 = jnp.vstack([s_newt_, jnp.zeros(s_newt_.shape)]).T
 
 
@@ -248,7 +334,7 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
     subspace_other = jax.lax.select(jnp.linalg.norm(s_grad) > np_eps, jnp.vstack([s_newt, normalize(s_grad)]).T, jnp.vstack([s_newt, jnp.zeros(s_newt.shape)]).T)
 
 
-    case0_cond = jnp.all(jnp.array([posdef, jnp.linalg.norm(s_newt) < delta]))
+    case0_cond = jnp.logical_and(posdef, jnp.linalg.norm(og_s_newt) < delta)
     subspace = jax.lax.select(case0_cond, subspace_0, subspace_other)
 
 
@@ -257,14 +343,16 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
     cg = subspace.T.dot(sg)
 
     ### compute step ###
-    sc_1 = solve_1d_trust_region_subproblem(shess, sg, subspace[:, 0], delta, ss0)
-    sc_n, _ = solve_nd_trust_region_subproblem_jitted(
+    sc_nd, _ = solve_nd_trust_region_subproblem_jitted(
         chess,
         cg,
         jnp.sqrt(jnp.maximum(delta**2 - jnp.linalg.norm(ss0) ** 2, 0.0)),
     )
+    sc_1 = solve_1d_trust_region_subproblem(shess, sg, subspace[:, 0], delta, ss0)
+    sc_1d = jnp.zeros_like(sc_nd).at[0].set(1) * sc_1
 
-    sc = jax.lax.select(jnp.linalg.matrix_rank(subspace) == 1, sc_1, sc_n)
+    sc = jax.lax.select(jnp.linalg.matrix_rank(subspace) == 1, sc_1d, sc_nd)
+    # sc = sc_nd
 
     ss = subspace.dot(jnp.real(sc))
     s = scaling.dot(ss)
@@ -328,6 +416,8 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
         'x': x,
         'posdef': posdef,
         'sg': sg,
+        'sc_1d': sc_1d,
+        'sc_nd': sc_nd,
     }
 
 @dataclass
@@ -359,6 +449,8 @@ class StepInfo:
     x: jnp.ndarray
     posdef: bool
     sg: jnp.ndarray
+    sc_1d: jnp.ndarray
+    sc_nd: jnp.ndarray
     
     type: str = 'tr2d'
 
