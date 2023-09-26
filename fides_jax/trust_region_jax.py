@@ -121,28 +121,6 @@ def secular_newton(x0, w, eigvals, eigvecs, delta, num_iter):
         x0,
     )
 
-# @jax.jit
-# def secular_newton(x0, w, eigvals, eigvecs, delta, maxiter):
-#     """
-#     Newton's method for root-finding.
-#     no convergence criteria, just set number of iterations but if an iteration leads to inf/nan
-#     it is ignored and the following iterations essentially become expensive noops
-#     """
-#     def cond(it, x):
-#         return jnp.logical_and(jnp.isfinite(x), it < maxiter)
-
-#     def body(it, x):
-#         fx, dfx = secular_and_grad(x, w, eigvals, eigvecs, delta)
-#         step = fx / dfx
-#         new_x = x - step
-#         return it+1, new_x
-
-#     return jax.lax.while_loop(
-#         cond,
-#         body,
-#         (0, x0),
-#     )
-
 @jax.jit
 def copysign(a, b):
     return jnp.abs(-a)*(jnp.sign(b) + (b == 0))
@@ -267,75 +245,16 @@ def solve_nd_trust_region_subproblem_jitted(B, g, delta):
     # jax.debug.print('case encountered: {case}', case = hess_case)
     return s, hess_case
 
-def solve_nd_trust_region_subproblem(B, g, delta):
-    if delta == 0:
-        return jnp.zeros(g.shape), 'zero'
+# def solve_nd_trust_region_subproblem(B, g, delta):
+#     if delta == 0:
+#         return jnp.zeros(g.shape), 'zero'
 
-    cases = ['posdef', 'indef', 'hard']
-    s, case_ind = solve_nd_trust_region_subproblem_jitted(B, g, delta)
-    return s, cases[int(case_ind)]
+#     cases = ['posdef', 'indef', 'hard']
+#     s, case_ind = solve_nd_trust_region_subproblem_jitted(B, g, delta)
+#     return s, cases[int(case_ind)]
 
-
-@jax.jit
-def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
-    v, dv = get_affine_scaling(x, grad, lb, ub)
-
-    ### trust region init ###
-
-    scaling = jnp.diag(jnp.sqrt(jnp.abs(v)))
-    theta = jnp.maximum(theta_max, 1 - jnp.linalg.norm(v * grad, jnp.inf))
-
-    sg = scaling.dot(grad)
-    # diag(g_k)*J^v_k Eq (2.5) [ColemanLi1994]
-    g_dscaling = jnp.diag(jnp.abs(grad) * dv)
-
-
-    ### step ###
-
-    br = jnp.ones(sg.shape)
-    minbr = 1.0
-    alpha = 1.0
-    iminbr = jnp.array([])
-
-    qpval = 0.0
-
-    # B_hat (Eq 2.5) [ColemanLi1996]
-    # shess = jnp.asarray(scaling * hess * scaling + g_dscaling)
-    shess = jnp.matmul(jnp.matmul((scaling), hess), (scaling)) + g_dscaling
-
-    s0 = jnp.zeros(sg.shape)
-    ss0 = jnp.zeros(sg.shape)
-
-    ### 2D steps ###
-
-    og_s_newt = -jnp.linalg.lstsq(shess, sg)[0]
-    # lstsq only returns absolute ev values
-    e, v_ = jnp.linalg.eig(shess)
-    posdef = jnp.min(jnp.real(e)) > -np_eps * jnp.max(jnp.abs(e))
-
-    # if len(sg) == 1:
-    #     s_newt = -sg[0] / self.shess[0]
-    #     self.subspace = np.expand_dims(s_newt, 1)
-    #     return
-
-
-    s_newt_ = normalize(og_s_newt)
-    subspace_0 = jnp.vstack([s_newt_, jnp.zeros(s_newt_.shape)]).T
-
-
-    s_newt_2 = jnp.real(v_[:, jnp.argmin(jnp.real(e))])
-    s_newt = jax.lax.select(posdef, s_newt_, s_newt_2)
-    s_grad = jax.lax.select(posdef, sg.copy(), scaling.dot(jnp.sign(sg) + (sg == 0)))
-    s_newt = normalize(s_newt)
-    s_grad = s_grad - s_newt * s_newt.dot(s_grad)
-    subspace_other = jax.lax.select(jnp.linalg.norm(s_grad) > np_eps, jnp.vstack([s_newt, normalize(s_grad)]).T, jnp.vstack([s_newt, jnp.zeros(s_newt.shape)]).T)
-
-
-    case0_cond = jnp.logical_and(posdef, jnp.linalg.norm(og_s_newt) < delta)
-    subspace = jax.lax.select(case0_cond, subspace_0, subspace_other)
-
-
-    ### reduce to subspace ###
+def step_compute(x, subspace, sg, shess, delta, lb, ub, scaling, ss0, theta):
+    ### project to subspace ###
     chess = subspace.T.dot(shess.dot(subspace))
     cg = subspace.T.dot(sg)
 
@@ -375,6 +294,9 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
     minbr = jnp.min(br)
     iminbr = jnp.argmin(br)
 
+    # use where because it captures multiple minimums whereas argmin always returns single index scalar
+    # iminbr = jnp.where(br == minbr)
+
     # compute the minimum of the step
     alpha = jnp.min(jnp.array([1, theta * minbr]))
 
@@ -384,7 +306,94 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
 
     qpval = quadratic_form(shess, sg, ss + ss0)
 
-    x_new = x + s + s0
+    # x_new = x + s + s0
+    return (s, ss, sc, og_s, og_ss, og_sc, qpval, br, iminbr, minbr, alpha)
+
+
+@jax.jit
+def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
+    v, dv = get_affine_scaling(x, grad, lb, ub)
+
+    ### trust region init ###
+
+    scaling = jnp.diag(jnp.sqrt(jnp.abs(v)))
+    theta = jnp.maximum(theta_max, 1 - jnp.linalg.norm(v * grad, jnp.inf))
+
+    sg = scaling.dot(grad)
+    # diag(g_k)*J^v_k Eq (2.5) [ColemanLi1994]
+    g_dscaling = jnp.diag(jnp.abs(grad) * dv)
+
+
+    ### step ###
+
+    br = jnp.ones(sg.shape)
+    minbr = 1.0
+    alpha = 1.0
+    iminbr = jnp.array([])
+
+    qpval = 0.0
+
+    # B_hat (Eq 2.5) [ColemanLi1996]
+    shess = jnp.matmul(jnp.matmul((scaling), hess), (scaling)) + g_dscaling
+
+    s0 = jnp.zeros(sg.shape)
+    ss0 = jnp.zeros(sg.shape)
+
+    ### 2D steps ###
+
+    og_s_newt = -jnp.linalg.lstsq(shess, sg)[0]
+    # lstsq only returns absolute ev values
+    e, v_ = jnp.linalg.eig(shess)
+    posdef = jnp.min(jnp.real(e)) > -np_eps * jnp.max(jnp.abs(e))
+
+    # if len(sg) == 1:
+    #     s_newt = -sg[0] / self.shess[0]
+    #     self.subspace = np.expand_dims(s_newt, 1)
+    #     return
+
+
+    s_newt_ = normalize(og_s_newt)
+    subspace_0 = jnp.vstack([s_newt_, jnp.zeros(s_newt_.shape)]).T
+
+
+    s_newt_2 = jnp.real(v_[:, jnp.argmin(jnp.real(e))])
+    s_newt = jax.lax.select(posdef, s_newt_, s_newt_2)
+    s_grad = jax.lax.select(posdef, sg.copy(), scaling.dot(jnp.sign(sg) + (sg == 0)))
+    s_newt = normalize(s_newt)
+    s_grad = s_grad - s_newt * s_newt.dot(s_grad)
+    subspace_other = jax.lax.select(jnp.linalg.norm(s_grad) > np_eps, jnp.vstack([s_newt, normalize(s_grad)]).T, jnp.vstack([s_newt, jnp.zeros(s_newt.shape)]).T)
+
+
+    case0_cond = jnp.logical_and(posdef, jnp.linalg.norm(og_s_newt) < delta)
+    subspace = jax.lax.select(case0_cond, subspace_0, subspace_other)
+    
+    s, ss, sc, og_s, og_ss, og_sc, qpval, br, iminbr, minbr, alpha = step_compute(x, subspace, sg, shess, delta, lb, ub, scaling, ss0, theta)
+
+    ### TRT step ###
+    trt_s0 = s0.at[iminbr].set(s0[iminbr] + theta * br[iminbr] * og_s[iminbr])
+    trt_ss0 = ss0.at[iminbr].set(ss0[iminbr] + theta * br[iminbr] * og_ss[iminbr])
+    # update x and at breakpoint
+    trt_x = x + trt_s0
+
+    trt_subspace = subspace.at[iminbr, :].set(0)
+    # reduce subspace
+    # trt_subspace = trt_subspace[:, (trt_subspace != 0).any(axis=0)]
+    # normalize subspace
+    for ix in range(trt_subspace.shape[1]):
+        # column normalization
+        trt_subspace.at[:, ix].set(normalize(trt_subspace[:, ix]))
+
+    trt_s, trt_ss, trt_sc, trt_og_s, trt_og_ss, trt_og_sc, trt_qpval, trt_br, trt_iminbr, trt_minbr, trt_alpha = step_compute(trt_x, trt_subspace, sg, shess, delta, lb, ub, scaling, trt_ss0, theta)
+
+
+    s, ss, sc, og_s, og_ss, og_sc, qpval, br, iminbr, minbr, alpha, step_type = jax.lax.cond(
+        jnp.logical_and(alpha < 1.0, trt_qpval < qpval),
+        (), lambda _: (trt_s, trt_ss, trt_sc, trt_og_s, trt_og_ss, trt_og_sc, trt_qpval, trt_br, trt_iminbr, trt_minbr, trt_alpha, 0),
+        (), lambda _: (s, ss, sc, og_s, og_ss, og_sc, qpval, br, iminbr, minbr, alpha, 1)
+    )
+
+    x_new = x + s
+
     return {
         'x_new': x_new,
         'qpval': qpval,
@@ -397,15 +406,12 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
         'theta': theta,
         'alpha': alpha,
         'br': br,
-        'cg': cg,
-        'chess': chess,
+        # 'cg': cg,
+        # 'chess': chess,
         'delta': delta,
         'iminbr': iminbr,
         'lb': lb,
         'minbr': minbr,
-        'og_s': og_s,
-        'og_sc': og_sc,
-        'og_ss': og_ss,
         'sc': sc,
         'shess': shess,
         'subspace': subspace,
@@ -413,8 +419,7 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
         'x': x,
         'posdef': posdef,
         'sg': sg,
-        'sc_1d': sc_1d,
-        'sc_nd': sc_nd,
+        'type': step_type
     }
 
 @dataclass
@@ -430,15 +435,12 @@ class StepInfo:
     theta: jnp.ndarray
     alpha: jnp.ndarray
     br: jnp.ndarray
-    cg: jnp.ndarray
-    chess: jnp.ndarray
+    # cg: jnp.ndarray
+    # chess: jnp.ndarray
     delta: float
     iminbr: jnp.ndarray
     lb: jnp.ndarray
     minbr: jnp.ndarray
-    og_s: jnp.ndarray
-    og_sc: jnp.ndarray
-    og_ss: jnp.ndarray
     sc: jnp.ndarray
     shess: jnp.ndarray
     subspace: jnp.ndarray
@@ -446,11 +448,11 @@ class StepInfo:
     x: jnp.ndarray
     posdef: bool
     sg: jnp.ndarray
-    sc_1d: jnp.ndarray
-    sc_nd: jnp.ndarray
-    
-    type: str = 'tr2d'
+    type: str
+    # type: str = 'tr2d'
 
 def tr_wrapped(x, grad, hess, lb, ub, theta_max, delta):
     res = tr_iteration(x, grad, hess, lb, ub, theta_max, delta)
+    type_map = ['2d', 'trt']
+    res['type'] = type_map[res['type']]
     return StepInfo(**res)
