@@ -264,7 +264,7 @@ def solve_nd_trust_region_subproblem_jitted(B, g, delta):
 
     s = jax.lax.select(posdef_cond, s, other_s)
     hess_case = jax.lax.select(posdef_cond, 0, other_case)
-    jax.debug.print('case encountered: {case}', case = hess_case)
+    # jax.debug.print('case encountered: {case}', case = hess_case)
     return s, hess_case
 
 def solve_nd_trust_region_subproblem(B, g, delta):
