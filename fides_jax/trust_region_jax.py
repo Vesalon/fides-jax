@@ -4,32 +4,32 @@ import jax
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_debug_nans", True)
 np_eps = jnp.finfo(jnp.float64).eps
-
-def make_newton(f, value_and_grad = False):
-    """
-    Newton's method for root-finding.
-    makes newton with no convergence criteria, just set number of iterations
-    """
-    if value_and_grad:
-        def body(it, x):
-            fx, dfx = f(x)
-            step = fx / dfx
-            new_x = x - step
-            return jax.lax.select(jnp.isfinite(new_x), new_x, x)
-    else:
-        def body(it, x):
-            fx, dfx = f(x), jax.grad(f)(x)
-            step = fx / dfx
-            new_x = x - step
-            return jax.lax.select(jnp.isfinite(new_x), new_x, x)
-    def newton(x0, num_iter):
-        return jax.lax.fori_loop(
-            0,
-            num_iter,
-            body,
-            x0,
-        )
-    return jax.jit(newton)
+# 
+# def make_newton(f, value_and_grad = False):
+    # """
+    # Newton's method for root-finding.
+    # makes newton with no convergence criteria, just set number of iterations
+    # """
+    # if value_and_grad:
+        # def body(it, x):
+            # fx, dfx = f(x)
+            # step = fx / dfx
+            # new_x = x - step
+            # return jax.lax.select(jnp.isfinite(new_x), new_x, x)
+    # else:
+        # def body(it, x):
+            # fx, dfx = f(x), jax.grad(f)(x)
+            # step = fx / dfx
+            # new_x = x - step
+            # return jax.lax.select(jnp.isfinite(new_x), new_x, x)
+    # def newton(x0, num_iter):
+        # return jax.lax.fori_loop(
+            # 0,
+            # num_iter,
+            # body,
+            # x0,
+        # )
+    # return jax.jit(newton)
 
 @jax.jit
 def normalize(v):
@@ -143,6 +143,7 @@ def secular_newton(x0, w, eigvals, eigvecs, delta, num_iter):
 #         (0, x0),
 #     )
 
+@jax.jit
 def copysign(a, b):
     return jnp.abs(-a)*(jnp.sign(b) + (b == 0))
 
@@ -197,11 +198,6 @@ def solve_1d_trust_region_subproblem(B, g, s, delta, s0):
     b = s.T.dot(B.dot(s0) + g)
 
     minq = -b / (2 * a)
-    # if a > 0 and jnp.linalg.norm(minq * s + s0) <= delta:
-    #     # interior solution
-    #     tau = minq
-    # else:
-    #     tau = get_1d_trust_region_boundary_solution(B, g, s, s0, delta)
 
     bound_cond = jnp.logical_and(a > 0, jnp.linalg.norm(minq * s + s0) <= delta)
     tau = jax.lax.select(bound_cond, minq, get_1d_trust_region_boundary_solution(B, g, s, s0, delta))
@@ -327,7 +323,8 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
     subspace_0 = jnp.vstack([s_newt_, jnp.zeros(s_newt_.shape)]).T
 
 
-    s_newt = jnp.real(v_[:, jnp.argmin(jnp.real(e))])
+    s_newt_2 = jnp.real(v_[:, jnp.argmin(jnp.real(e))])
+    s_newt = jax.lax.select(posdef, s_newt_, s_newt_2)
     s_grad = jax.lax.select(posdef, sg.copy(), scaling.dot(jnp.sign(sg) + (sg == 0)))
     s_newt = normalize(s_newt)
     s_grad = s_grad - s_newt * s_newt.dot(s_grad)
