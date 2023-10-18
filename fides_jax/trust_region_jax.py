@@ -31,12 +31,12 @@ np_eps = jnp.finfo(jnp.float64).eps
         # )
     # return jax.jit(newton)
 
-@jax.jit
+# @jax.jit
 def normalize(v):
     nv = jnp.linalg.norm(v)
     return jax.lax.select(nv > 0, v/nv, v)
 
-@jax.jit
+# @jax.jit
 def get_affine_scaling(x, grad, lb, ub):
     """
     Computes the vector v and dv, the diagonal of its Jacobian. For the
@@ -61,24 +61,24 @@ def get_affine_scaling(x, grad, lb, ub):
     dv = jnp.where(bounded, 1, _dv)
     return v, dv
 
-@jax.jit
+# @jax.jit
 def quadratic_form(Q, p, x):
     return 0.5 * x.T.dot(Q).dot(x) + p.T.dot(x)
 
-@jax.jit
+# @jax.jit
 def slam(lam, w, eigvals, eigvecs):
     el = eigvals + lam
     c = jnp.where(el != 0, w/el, w)
     return eigvecs.dot(c)
 
-@jax.jit
+# @jax.jit
 def dslam(lam, w, eigvals, eigvecs):
     el = eigvals + lam
     _c = jnp.where(el != 0, w/-jnp.power(el, 2), w)
     c = jnp.where((el == 0) & (_c != 0), jnp.inf, _c)
     return eigvecs.dot(c)
 
-@jax.jit
+# @jax.jit
 def secular(lam,w,eigvals,eigvecs,delta):
     res1 = jax.lax.select(lam < -jnp.min(eigvals), jnp.inf, 0.)
     s = slam(lam, w, eigvals, eigvecs)
@@ -87,21 +87,21 @@ def secular(lam,w,eigvals,eigvecs,delta):
     return (res1 + res2)
 
 
-@jax.jit
+# @jax.jit
 def dsecular(lam, w, eigvals, eigvecs, delta):
     s = slam(lam, w, eigvals, eigvecs)
     ds = dslam(lam, w, eigvals, eigvecs)
     sn = jnp.linalg.norm(s)
     return jax.lax.select(sn > 0, -s.T.dot(ds) / (jnp.linalg.norm(s) ** 3), jnp.inf)
 
-@jax.jit
+# @jax.jit
 def secular_and_grad(x, w, eigvals, eigvecs, delta):
     return (
         secular(x, w, eigvals, eigvecs, delta),
         dsecular(x, w, eigvals, eigvecs, delta)
     )
 
-@jax.jit
+# @jax.jit
 def secular_newton(x0, w, eigvals, eigvecs, delta, num_iter):
     """
     Newton's method for root-finding.
@@ -121,11 +121,11 @@ def secular_newton(x0, w, eigvals, eigvecs, delta, num_iter):
         x0,
     )
 
-@jax.jit
+# @jax.jit
 def copysign(a, b):
     return jnp.abs(-a)*(jnp.sign(b) + (b == 0))
 
-@jax.jit
+# @jax.jit
 def get_1d_trust_region_boundary_solution(B, g, s, s0, delta):
     a = jnp.dot(s, s)
     # a = a[0, 0]
@@ -142,7 +142,7 @@ def get_1d_trust_region_boundary_solution(B, g, s, s0, delta):
     return ts[jnp.argmin(qs)]
 
 
-@jax.jit
+# @jax.jit
 def solve_1d_trust_region_subproblem(B, g, s, delta, s0):
     """
     Solves the special case of a one-dimensional subproblem
@@ -186,7 +186,7 @@ def solve_1d_trust_region_subproblem(B, g, s, delta, s0):
 
     return jax.lax.select(jnp.logical_and(delta == 0.0, jnp.array_equal(s, jnp.zeros_like(s))), null_res, res)
 
-@jax.jit
+# @jax.jit
 def solve_nd_trust_region_subproblem_jitted(B, g, delta):
     # See Nocedal & Wright 2006 for details
     # INITIALIZATION
@@ -253,6 +253,7 @@ def solve_nd_trust_region_subproblem_jitted(B, g, delta):
 #     s, case_ind = solve_nd_trust_region_subproblem_jitted(B, g, delta)
 #     return s, cases[int(case_ind)]
 
+# @jax.jit
 def step_compute(x, subspace, sg, shess, delta, lb, ub, scaling, ss0, theta):
     ### project to subspace ###
     chess = subspace.T.dot(shess.dot(subspace))
@@ -326,12 +327,12 @@ def tr_iteration(x, grad, hess, lb, ub, theta_max, delta):
 
     ### step ###
 
-    br = jnp.ones(sg.shape)
-    minbr = 1.0
-    alpha = 1.0
-    iminbr = jnp.array([])
+    # br = jnp.ones(sg.shape)
+    # minbr = 1.0
+    # alpha = 1.0
+    # iminbr = jnp.array([])
 
-    qpval = 0.0
+    # qpval = 0.0
 
     # B_hat (Eq 2.5) [ColemanLi1996]
     shess = jnp.matmul(jnp.matmul((scaling), hess), (scaling)) + g_dscaling
@@ -456,3 +457,174 @@ def tr_wrapped(x, grad, hess, lb, ub, theta_max, delta):
     type_map = ['2d', 'trt']
     res['type'] = type_map[res['type']]
     return StepInfo(**res)
+
+
+
+#### Optimizer ####
+
+class TrustRegionOptimizer:
+    def __init__(self, obj_fn, lb = None, ub = None, **kwargs):
+        init_kwargs = kwargs
+        if not lb is None:
+            init_kwargs['lb'] = lb
+        if not ub is None:
+            init_kwargs['ub'] = ub
+        self.init_kwargs = init_kwargs
+        self.obj_fn = jax.jit(obj_fn)
+        self.eps = np_eps
+
+    def init_state(self, params, **kwargs):
+        loss, grad, hess = self.obj_fn(params)
+        return {
+            'x': params,
+            'fval': loss,
+            'grad': grad,
+            'hess': hess,
+            'iter': 0,
+            # optimizer params
+            'lb': kwargs['lb'] or -jnp.inf*jnp.ones(params.shape),
+            'ub': kwargs['ub'] or jnp.inf*jnp.ones(params.shape),
+            'maxiters': kwargs['maxiters'] or 1e3,
+            'fatol': kwargs['fatol'] or 1e-8,
+            'frtol': kwargs['frtol'] or 1e-8,
+            'xtol': kwargs['xtol'] or 0.0,
+            'gatol': kwargs['gatol'] or 1e-6,
+            'grtol': kwargs['grtol'] or 0.0,
+            'theta_max': kwargs['theta_max'] or 0.95,
+            'mu': kwargs['mu'] or 0.25,
+            'eta': kwargs['eta'] or 0.75,
+            'gamma1': kwargs['gamma1'] or 0.25,
+            'gamma2': kwargs['gamma2'] or 2.0,
+            # step values
+            'delta': kwargs['delta'] or 1.0,
+            'tr_ratio': 1.0,
+            'alpha': None,
+            'theta': None,
+            'x_sol': None,
+            'f_dff': None,
+            'scaling': None,
+            'dv': None,
+            'posdef': None,
+            'qpval': None,
+            'type': None,
+            'subspace': None,
+            'shess': None,
+            'br': None,
+            'minbr': None,
+            'iminbr': None,
+            'sc': None,
+            'sg': None,
+            's': None,
+            's0': None,
+            'ss': None,
+            'ss0': None,
+            'stepsx': None,
+            'nsx': None,
+        }
+
+    def get_params(self, state):
+        return state['x']
+
+
+    def update(self, state, step):
+        state['iter'] = state['iter'] + 1
+
+        state['x_sol'] = step['x_new']
+        state['alpha'] = step['alpha']
+        state['theta'] = step['theta']
+        state['delta'] = step['delta']
+        state['scaling'] = step['scaling']
+        state['dv'] = step['dv']
+        state['posdef'] = step['posdef']
+        state['qpval'] = step['qpval']
+        state['type'] = step['type']
+        state['subspace'] = step['subspace']
+        state['shess'] = step['shess']
+        state['br'] = step['br']
+        state['minbr'] = step['minbr']
+        state['iminbr'] = step['iminbr']
+        state['sc'] = step['sc']
+        state['sg'] = step['sg']
+        state['s'] = step['s']
+        state['s0'] = step['s0']
+        state['ss'] = step['ss']
+        state['ss0'] = step['ss0']
+
+        # update tr_ratio
+        state['stepsx'] = state['ss'] + state['ss0']
+        state['nsx'] = jnp.linalg.norm(state['stepsx'])
+        curr_delta = state['delta']
+        loss, grad, hess = self.obj_fn(state['x_sol'])
+
+        if not jnp.isfinite(loss):
+            state['tr_ratio'] = 0
+            state['delta'] = jnp.nanmin(
+                jnp.array([state['delta'] * state['gamma1'], state['nsx'] / 4])
+            )
+            accepted = False
+        else:
+            aug = 0.5 * jnp.dot(state['stepsx'], state['dv'] * jnp.abs(grad) * state['stepsx'])
+            actual_decrease = state['fval'] - loss - aug
+            predicted_decrease = -state['qpval']
+            if predicted_decrease <= 0.0:
+                state['tr_ratio'] = 0.0
+            else:
+                state['tr_ratio'] = actual_decrease / predicted_decrease
+
+            interior_solution = state['nsx'] < curr_delta * 0.9
+
+            if (
+                state['tr_ratio'] >= state['eta']
+                and not interior_solution
+            ):
+                # increase radius
+                state['delta'] = state['gamma2'] * state['delta']
+            elif state['tr_ratio'] <= state['mu']:
+                # decrease radius
+                state['delta'] = jnp.nanmin(
+                    [state['delta'] * state['gamma1'], state['nsx'] / 4]
+                )
+            accepted = state['tr_ratio'] > 0.0
+
+        if accepted:
+            state['f_diff'] = jnp.abs(loss - state['fval'])
+            state['x'] = state['x_sol']
+            state['fval'] = loss
+            state['grad'] = state['grad']
+            state['hess'] = hess
+        return state
+
+    def converge_cond(self, state):
+        gnorm = jnp.linalg.norm(state['grad'])
+        old_fval = -(state['f_diff'] - state['fval'])
+        return (
+            state['tr_ratio'] > state['mu'] and state['f_diff'] < state['fatol'] + state['frtol'] * old_fval
+            or state['iter'] > 1 and state['nsx'] < state['xtol']
+            or gnorm <= state['gatol']
+            or gnorm <= state['grtol'] * jnp.abs(old_fval)
+        ) or {
+            state['iter'] >= state['maxiters']
+            or state['delta'] <= self.eps
+        }
+
+
+    def step_calc(self, state):
+        step = tr_iteration(
+            state['x'],
+            state['grad'],
+            state['hess'],
+            state['lb'],
+            state['ub'],
+            state['theta_max'],
+            state['delta']
+        )
+
+    def minimize_loop(self, state):
+        while not self.converge_cond(state):
+            step = self.step_calc(state)
+            state = self.update(state, step)
+        return state
+
+    def minimize(self, params):
+        state = self.init_state(params, **self.init_kwargs)
+        return self.minimize_loop(state)
